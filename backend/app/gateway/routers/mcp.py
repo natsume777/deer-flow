@@ -63,6 +63,52 @@ class McpConfigUpdateRequest(BaseModel):
     )
 
 
+_SECRET_PLACEHOLDER = "********"
+
+# Env-var keys and OAuth fields that are considered sensitive and must be
+# redacted when the configuration is returned via the read endpoint.
+_SENSITIVE_ENV_KEYS = frozenset(
+    {
+        "api_key",
+        "api_secret",
+        "token",
+        "secret",
+        "password",
+        "credential",
+    }
+)
+
+_SENSITIVE_OAUTH_FIELDS = frozenset(
+    {
+        "client_secret",
+        "refresh_token",
+    }
+)
+
+
+def _is_sensitive_env_key(key: str) -> bool:
+    """Return True when *key* looks like it holds a secret value."""
+    lower = key.lower()
+    return any(s in lower for s in _SENSITIVE_ENV_KEYS)
+
+
+def _redact_server_config(server: McpServerConfigResponse) -> McpServerConfigResponse:
+    """Return a copy of *server* with secret values replaced by a placeholder."""
+    data = server.model_dump()
+
+    # Redact sensitive environment variables
+    if data.get("env"):
+        data["env"] = {k: (_SECRET_PLACEHOLDER if _is_sensitive_env_key(k) else v) for k, v in data["env"].items()}
+
+    # Redact sensitive OAuth fields
+    if data.get("oauth"):
+        for field in _SENSITIVE_OAUTH_FIELDS:
+            if data["oauth"].get(field):
+                data["oauth"][field] = _SECRET_PLACEHOLDER
+
+    return McpServerConfigResponse(**data)
+
+
 @router.get(
     "/mcp/config",
     response_model=McpConfigResponse,
@@ -71,6 +117,10 @@ class McpConfigUpdateRequest(BaseModel):
 )
 async def get_mcp_configuration() -> McpConfigResponse:
     """Get the current MCP configuration.
+
+    Sensitive values (API keys, tokens, OAuth secrets) are redacted in the
+    response to prevent accidental exposure.  Use the PUT endpoint to update
+    them.
 
     Returns:
         The current MCP configuration with all servers.
@@ -83,7 +133,7 @@ async def get_mcp_configuration() -> McpConfigResponse:
                     "enabled": true,
                     "command": "npx",
                     "args": ["-y", "@modelcontextprotocol/server-github"],
-                    "env": {"GITHUB_TOKEN": "ghp_xxx"},
+                    "env": {"GITHUB_TOKEN": "********"},
                     "description": "GitHub MCP server for repository operations"
                 }
             }
@@ -92,7 +142,7 @@ async def get_mcp_configuration() -> McpConfigResponse:
     """
     config = get_extensions_config()
 
-    return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in config.mcp_servers.items()})
+    return McpConfigResponse(mcp_servers={name: _redact_server_config(McpServerConfigResponse(**server.model_dump())) for name, server in config.mcp_servers.items()})
 
 
 @router.put(

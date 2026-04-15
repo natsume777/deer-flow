@@ -217,11 +217,11 @@ class Paths:
     def ensure_thread_dirs(self, thread_id: str) -> None:
         """Create all standard sandbox directories for a thread.
 
-        Directories are created with mode 0o777 so that sandbox containers
-        (which may run as a different UID than the host backend process) can
-        write to the volume-mounted paths without "Permission denied" errors.
-        The explicit chmod() call is necessary because Path.mkdir(mode=...) is
-        subject to the process umask and may not yield the intended permissions.
+        Directories are created with mode 0o770 so that the backend process
+        and its group (which should include sandbox container UIDs) can
+        read/write, while other system users are denied access.  The explicit
+        chmod() call is necessary because Path.mkdir(mode=...) is subject to
+        the process umask and may not yield the intended permissions.
 
         Includes the ACP workspace directory so it can be volume-mounted into
         the sandbox container at ``/mnt/acp-workspace`` even before the first
@@ -234,7 +234,7 @@ class Paths:
             self.acp_workspace_dir(thread_id),
         ]:
             d.mkdir(parents=True, exist_ok=True)
-            d.chmod(0o777)
+            d.chmod(0o770)
 
     def delete_thread_dir(self, thread_id: str) -> None:
         """Delete all persisted data for a thread.
