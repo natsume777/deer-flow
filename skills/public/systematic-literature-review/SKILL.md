@@ -1,6 +1,6 @@
 ---
 name: systematic-literature-review
-description: Use this skill whenever the user wants to survey, synthesize, or do a systematic literature review (SLR) across multiple academic papers on a topic. Triggers on queries like "review the literature on X", "survey recent papers about Y", "do an SLR on Z", "what does the literature say about W", "summarize recent research in A", or "compare findings across papers on B". Make sure to use this skill even when the user does not say the word "systematic" — the defining signal is that they want a synthesis across MANY papers rather than a deep read of a single one. Distinct from `academic-paper-review`, which does single-paper peer review. This skill searches arXiv, extracts structured metadata from each paper in parallel via subagents, synthesizes themes across the set, and emits a report in APA, IEEE, or BibTeX citation format.
+description: Use this skill whenever the user wants to survey, synthesize, or do a systematic literature review (SLR) across multiple academic papers on a topic. Triggers on queries like "review the literature on X", "survey recent papers about Y", "do an SLR on Z", "what does the literature say about W", "summarize recent research in A", "compare findings across papers on B", "annotated bibliography on C", or "what are the research trends in D". Make sure to use this skill even when the user does not say the word "systematic" — the defining signal is that they want a synthesis across MANY papers rather than a deep read of a single one. Also trigger when the user asks for a "state of the art" summary or a "research landscape" overview. Distinct from `academic-paper-review`, which does single-paper peer review. This skill searches arXiv, extracts structured metadata from each paper in parallel via subagents, synthesizes themes across the set, and emits a report in APA, IEEE, or BibTeX citation format.
 ---
 
 # Systematic Literature Review Skill
@@ -10,6 +10,8 @@ description: Use this skill whenever the user wants to survey, synthesize, or do
 This skill produces a structured **systematic literature review (SLR)** across multiple academic papers on a research topic. Given a topic query, it searches arXiv, extracts structured metadata (research question, methodology, key findings, limitations) from each paper in parallel, synthesizes themes across the full set, and emits a final report with consistent citations.
 
 **Distinct from `academic-paper-review`:** that skill does deep peer review of a single paper. This skill does breadth-first synthesis across many papers. If the user hands you one paper URL and asks "review this paper", route to `academic-paper-review` instead.
+
+**Distinct from `deep-research`:** that skill does general web research across diverse sources. This skill is narrowly scoped to academic literature on arXiv with formal citation formatting. If the user wants a non-academic overview of a topic, route to `deep-research` instead.
 
 ## When to Use This Skill
 
@@ -36,11 +38,27 @@ The workflow has five phases. Follow them in order.
 Before doing any retrieval, confirm the following with the user. If any of these are unclear, ask **one** clarifying question that covers the missing pieces. Do not ask one question at a time.
 
 - **Topic**: the research area in plain English (e.g. "transformer attention variants").
-- **Scope**: how many papers (default 20, hard upper bound 50), optional time window (e.g. "last 2 years"), optional arXiv category (e.g. `cs.CL`, `cs.CV`).
+- **Scope**: how many papers (default 20, hard upper bound 50), optional time window (e.g. "last 2 years"), optional arXiv category (e.g. `cs.CL`, `cs.CV`). For common category mappings, see the reference table below.
 - **Citation format**: APA, IEEE, or BibTeX (default APA if the user does not specify and does not seem to be writing for a specific venue).
 - **Output location**: where to save the final report (default `/mnt/user-data/outputs/`).
 
 If the user says "50+ papers", politely cap it at 50 and explain that synthesis quality degrades quickly past that — for larger surveys they should split by sub-topic.
+
+**Common arXiv category mappings** (use these to translate natural-language field descriptions into `--category` flags):
+
+| User's field description | arXiv category |
+|---|---|
+| NLP / natural language processing | `cs.CL` |
+| Computer vision / image recognition | `cs.CV` |
+| Machine learning (general) | `cs.LG` |
+| AI / artificial intelligence | `cs.AI` |
+| Robotics | `cs.RO` |
+| Information retrieval / search | `cs.IR` |
+| Statistics / statistical learning | `stat.ML` |
+| Physics (general) | `physics` |
+| Mathematics | `math` |
+
+When the user's topic spans multiple categories (e.g. "multimodal learning" which touches `cs.CV` and `cs.CL`), omit the `--category` flag and let the query alone do the filtering — adding a single category would exclude relevant cross-disciplinary papers.
 
 ### Phase 2: Search arXiv
 
@@ -98,6 +116,11 @@ The script prints a JSON array to stdout. Each paper has: `id`, `title`, `author
 
 Instead, you MUST call the `task` tool to spawn subagents. The reason: extracting 10-50 papers in your own context consumes too many tokens and degrades synthesis quality in Phase 4. Each subagent runs in an isolated context with only its batch of papers, producing cleaner extractions.
 
+**Graceful degradation when subagents are unavailable**: If the `task` tool is not available (because `subagent_enabled` is `false`), do **not** silently skip Phase 3 or abort. Instead:
+1. Inform the user that subagents are disabled and the review will be less thorough.
+2. Fall back to extracting metadata yourself in-context, but limit to at most 10 papers to avoid context exhaustion. If the user requested more than 10, explain the constraint and offer to either (a) enable subagents for the full set, or (b) proceed with a 10-paper subset.
+3. Use the same JSON schema described below so Phase 4 works identically regardless of extraction method.
+
 Split papers into batches of ~5, then for each batch, call the `task` tool with `subagent_type: "general-purpose"`. Each subagent receives the paper abstracts as text and returns structured JSON.
 
 **Concurrency limit: at most 3 subagents per turn.** The DeerFlow runtime enforces `MAX_CONCURRENT_SUBAGENTS = 3` and will silently drop any extra dispatches in the same turn — the LLM will not be told this happened, so strictly follow the round strategy below.
@@ -125,9 +148,13 @@ If the paper count lands between rows (e.g. 23 papers), round up to the next row
 
 **What each subagent receives**, as a structured prompt:
 
+When calling the `task` tool, you must provide all three required parameters in this order:
+1. `description`: a short label, e.g. "Extract metadata batch 1"
+2. `prompt`: the full extraction instructions (see template below)
+3. `subagent_type`: always `"general-purpose"` for this phase
+
 ```
-Execute this task: extract structured metadata and key findings from the
-following arXiv papers.
+Extract structured metadata and key findings from the following arXiv papers.
 
 Papers:
 [Paper 1]
@@ -141,24 +168,27 @@ abstract: <full abstract text>
 arxiv_id: ...
 ...
 
-For each paper, return a JSON object with these fields:
-- arxiv_id (string)
+For each paper, return a JSON object with exactly these fields:
+- arxiv_id (string) — must match the input id exactly
 - title (string)
 - authors (list of strings)
 - published_date (string, YYYY-MM-DD)
 - research_question (1 sentence, what problem the paper tackles)
 - methodology (1-2 sentences, how they tackle it)
-- key_findings (3-5 bullet points, what they actually found)
+- key_findings (list of 3-5 strings, what they actually found)
 - limitations (1-2 sentences, what they acknowledge or what is obviously missing)
+- categories (list of strings, from the input metadata)
 
 Return the result as a JSON array, one object per paper, in the same
 order as the input. Do not include any text outside the JSON — no
-preamble, no markdown fences, just the array.
+preamble, no markdown fences, just the raw JSON array.
 ```
 
-**Parsing subagent results**: the task tool returns strings with a fixed prefix like `Task Succeeded. Result: [...JSON...]`. Strip the `Task Succeeded. Result: ` prefix (or `Task failed.` / `Task timed out.` prefixes) before trying to parse JSON. If a batch fails or returns unparseable JSON, log it, note which papers were affected, and continue with the remaining batches — do not fail the whole synthesis on one bad batch.
+**Parsing subagent results**: the task tool returns strings with a fixed prefix like `Task Succeeded. Result: [...JSON...]`. Strip the `Task Succeeded. Result: ` prefix (or `Task failed.` / `Task timed out.` / `Task cancelled by user.` prefixes) before trying to parse JSON. If a batch fails or returns unparseable JSON, log it, note which papers were affected, and continue with the remaining batches — do not fail the whole synthesis on one bad batch.
 
-After all rounds complete, flatten the per-batch arrays into a single list of paper metadata objects, preserving order.
+**Handling partial failures**: After all rounds complete, check how many papers were successfully extracted vs. lost to failures. If more than 30% of papers failed extraction, warn the user in the report's methodology section. The synthesis in Phase 4 should only cover papers with successful extractions — do not speculate about papers that failed.
+
+After all rounds complete, flatten the per-batch arrays into a single list of paper metadata objects, preserving order. Validate that each object has the required `arxiv_id` field — drop malformed entries and log which papers were affected.
 
 ### Phase 4: Synthesize and format
 
@@ -170,8 +200,11 @@ Now produce the final SLR report. Two things happen here: cross-paper synthesis 
 - **Convergences**: findings that multiple papers agree on.
 - **Disagreements**: where papers reach different conclusions or use incompatible methodologies.
 - **Gaps**: what the collective literature does not yet address (often stated explicitly in the "limitations" fields).
+- **Temporal trends** (optional but encouraged): if the paper set spans multiple years, note how the field's focus has shifted over time — e.g. "Earlier papers (2020–2022) focused on X, while more recent work (2023–2025) has shifted toward Y."
 
 If the paper set is too small or too heterogeneous to support thematic synthesis (e.g. 5 papers on wildly different sub-topics), say so explicitly in the report — do not force themes that are not there.
+
+**Synthesis quality bar**: A good synthesis connects papers to each other, not just to the topic. For each theme, at least two papers should be discussed in relation to one another (agreeing, extending, contradicting). If you find yourself writing theme sections that mention only one paper each, that is a summary — not a synthesis. Restructure until each theme weaves multiple papers together.
 
 **Citation formatting**: the exact format depends on user preference. Read **only** the template file that matches the user's requested format, not all three:
 
@@ -183,13 +216,14 @@ Each template contains both the citation rules and a full report structure (exec
 
 ### Phase 5: Save and present
 
-Save the full report to `/mnt/user-data/outputs/slr-<topic-slug>-<YYYYMMDD>.md` where `<topic-slug>` is a lowercased hyphenated version of the topic (e.g. `transformer-attention`). Then call the `present_files` tool with that path so the user can download it.
+Save the full report to `/mnt/user-data/outputs/slr-<topic-slug>-<YYYYMMDD>.md` where `<topic-slug>` is a lowercased hyphenated version of the topic (e.g. `transformer-attention`), truncated to 50 characters max. Then call the `present_files` tool with that path so the user can download it.
 
 **In the chat message**, show a short preview so the user immediately sees value without opening the file:
 
 1. **Executive summary** — the 3–5 sentence paragraph from the top of the report, verbatim.
 2. **Themes list** — bullet list of the themes you identified in Phase 4 synthesis (just the theme names + one-line gloss, not the full theme sections).
-3. **Paper count + a pointer to the file** — e.g. "Full report with 20 papers, per-paper annotations, and formatted references saved to `slr-transformer-attention-20260409.md`."
+3. **Key statistics** — number of papers surveyed, date range covered, number of papers lost to extraction failures (if any).
+4. **Paper count + a pointer to the file** — e.g. "Full report with 20 papers, per-paper annotations, and formatted references saved to `slr-transformer-attention-20260409.md`."
 
 Do **not** dump the full 2000+ word report inline — per-paper annotations, references, and methodology belong in the file. The preview is there to let the user judge the report at a glance and decide whether to open it.
 
@@ -224,12 +258,23 @@ User: "Here's one paper (https://arxiv.org/abs/1706.03762). Can you review it?"
 
 This is a single-paper peer review, not a literature survey. Do not use this skill. Route to `academic-paper-review` instead.
 
+**Example 4: Subagents unavailable**
+
+User: "Review the literature on federated learning, 25 papers."
+
+Your flow:
+1. Phase 1: confirm topic (federated learning), scope (25 papers), format (APA default).
+2. Phase 2: `arxiv_search.py "federated learning" --max-results 25 --sort-by relevance`.
+3. Phase 3: `task` tool is not available. Inform the user: "Subagents are disabled, so I'll do a condensed review of the top 10 papers instead of the full 25. Enable subagents for the complete set." Extract metadata for 10 papers in-context.
+4. Phase 4: synthesize themes from the 10 extracted papers. Note the reduced scope in the methodology section.
+5. Phase 5: save and present, noting the reduced scope in the preview.
+
 ## Notes
 
-- **Prerequisite: `subagent_enabled` must be `true`**. Phase 3 requires the `task` tool for parallel metadata extraction. This tool is only loaded when `subagent_enabled` is set to `true` in the runtime config (`config.configurable.subagent_enabled`). Without it, the `task` tool will not appear in the available tools and Phase 3 cannot execute as designed.
-- **arXiv only, by design**. This skill does not query Semantic Scholar, PubMed, or Google Scholar. arXiv covers the bulk of CS/ML/physics/math preprints, which is what DeerFlow users most often want to survey. Multi-source academic search belongs in a dedicated MCP server, not inside this skill.
-- **Hard upper bound of 50 papers**. This is tied to the Phase 3 concurrency strategy (max 3 subagents per round, ~5 papers each, at most ~3 rounds). Surveys larger than 50 papers degrade in synthesis quality and are better done by splitting into sub-topics.
-- **Phase 3 requires subagents to be enabled**. This skill's parallel extraction step hard-requires the `task` tool, which is only available when `subagent_enabled=true` at runtime. If subagents are unavailable, do not claim to execute the Phase 3 parallel plan; instead, tell the user that subagents must be enabled for the full workflow, or offer to narrow/split the request into a smaller manual review.
-- **Subagent results are strings, not objects**. Always strip the `Task Succeeded. Result: ` / `Task failed.` / `Task timed out.` prefixes before parsing the JSON payload.
+- **Subagents are strongly recommended but not strictly required**. Phase 3 works best with the `task` tool for parallel metadata extraction (`subagent_enabled=true` in `config.configurable`). Without subagents, the skill falls back to in-context extraction with a 10-paper cap — functional but less thorough. Always inform the user when operating in fallback mode.
+- **arXiv only, by design**. This skill does not query Semantic Scholar, PubMed, or Google Scholar. arXiv covers the bulk of CS/ML/physics/math preprints, which is what DeerFlow users most often want to survey. Multi-source academic search belongs in a dedicated MCP server, not inside this skill. If the user's topic is primarily covered outside arXiv (e.g. biomedical research on PubMed, social science on SSRN), warn them that coverage will be incomplete.
+- **Hard upper bound of 50 papers**. This is tied to the Phase 3 concurrency strategy (max 3 subagents per round, ~5 papers each, at most 4 rounds). Surveys larger than 50 papers degrade in synthesis quality and are better done by splitting into sub-topics.
+- **Subagent results are strings, not objects**. Always strip the `Task Succeeded. Result: ` / `Task failed.` / `Task timed out.` / `Task cancelled by user.` prefixes before parsing the JSON payload.
 - **The `id` field is a bare arXiv id** (e.g. `1706.03762`), not a URL and not with a version suffix. `abs_url` / `pdf_url` hold the full URLs if you need them.
 - **Synthesis, not listing**. The final report must identify themes and compare findings across papers. A report that only lists papers one after another is a failure mode — if you cannot find themes, say so explicitly instead of faking them.
+- **Abstract-only extraction**. This skill works from abstracts, not full paper text. Synthesis quality is bounded by what abstracts reveal. The methodology section of the report should acknowledge this limitation.
