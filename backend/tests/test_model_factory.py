@@ -863,3 +863,185 @@ def test_no_duplicate_kwarg_when_reasoning_effort_in_config_and_thinking_disable
 
     # kwargs (runtime) takes precedence: thinking-disabled path sets reasoning_effort=minimal
     assert captured.get("reasoning_effort") == "minimal"
+
+
+# ---------------------------------------------------------------------------
+# Ollama-style reasoning toggle
+# ---------------------------------------------------------------------------
+
+
+def test_ollama_reasoning_passed_when_thinking_enabled(monkeypatch):
+    """When thinking is enabled and config has reasoning=True, reasoning should pass through."""
+    model = ModelConfig(
+        name="qwen3-local",
+        display_name="Qwen3 32B (Ollama)",
+        description=None,
+        use="langchain_ollama:ChatOllama",
+        model="qwen3:32b",
+        base_url="http://localhost:11434",
+        num_predict=8192,
+        temperature=0.7,
+        reasoning=True,
+        supports_thinking=True,
+        supports_vision=False,
+    )
+    cfg = _make_app_config([model])
+    _patch_factory(monkeypatch, cfg)
+
+    captured: dict = {}
+
+    class CapturingModel(FakeChatModel):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            BaseChatModel.__init__(self, **kwargs)
+
+    monkeypatch.setattr(factory_module, "resolve_class", lambda path, base: CapturingModel)
+
+    factory_module.create_chat_model(name="qwen3-local", thinking_enabled=True)
+
+    assert captured.get("reasoning") is True
+    assert captured.get("model") == "qwen3:32b"
+    assert captured.get("base_url") == "http://localhost:11434"
+
+
+def test_ollama_reasoning_disabled_when_thinking_off(monkeypatch):
+    """When thinking is disabled and config has reasoning=True,
+    reasoning must be overridden to False."""
+    model = ModelConfig(
+        name="qwen3-local",
+        display_name="Qwen3 32B (Ollama)",
+        description=None,
+        use="langchain_ollama:ChatOllama",
+        model="qwen3:32b",
+        base_url="http://localhost:11434",
+        num_predict=8192,
+        temperature=0.7,
+        reasoning=True,
+        supports_thinking=True,
+        supports_vision=False,
+    )
+    cfg = _make_app_config([model])
+    _patch_factory(monkeypatch, cfg)
+
+    captured: dict = {}
+
+    class CapturingModel(FakeChatModel):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            BaseChatModel.__init__(self, **kwargs)
+
+    monkeypatch.setattr(factory_module, "resolve_class", lambda path, base: CapturingModel)
+
+    factory_module.create_chat_model(name="qwen3-local", thinking_enabled=False)
+
+    assert captured.get("reasoning") is False
+
+
+def test_ollama_reasoning_not_injected_when_absent(monkeypatch):
+    """When config has no reasoning field, disabling thinking should not inject reasoning."""
+    model = ModelConfig(
+        name="llama-local",
+        display_name="Llama (Ollama)",
+        description=None,
+        use="langchain_ollama:ChatOllama",
+        model="llama3:8b",
+        base_url="http://localhost:11434",
+        supports_thinking=False,
+        supports_vision=False,
+    )
+    cfg = _make_app_config([model])
+    _patch_factory(monkeypatch, cfg)
+
+    captured: dict = {}
+
+    class CapturingModel(FakeChatModel):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            BaseChatModel.__init__(self, **kwargs)
+
+    monkeypatch.setattr(factory_module, "resolve_class", lambda path, base: CapturingModel)
+
+    factory_module.create_chat_model(name="llama-local", thinking_enabled=False)
+
+    # reasoning should NOT appear in kwargs at all
+    assert "reasoning" not in captured
+
+
+def test_ollama_when_thinking_disabled_takes_precedence_over_auto_reasoning(monkeypatch):
+    """when_thinking_disabled should take precedence over the automatic reasoning=False toggle."""
+    model = ModelConfig(
+        name="qwen3-custom",
+        display_name="Qwen3 Custom",
+        description=None,
+        use="langchain_ollama:ChatOllama",
+        model="qwen3:32b",
+        base_url="http://localhost:11434",
+        reasoning=True,
+        supports_thinking=True,
+        supports_vision=False,
+        when_thinking_disabled={"reasoning": False, "temperature": 0.5},
+    )
+    cfg = _make_app_config([model])
+    _patch_factory(monkeypatch, cfg)
+
+    captured: dict = {}
+
+    class CapturingModel(FakeChatModel):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            BaseChatModel.__init__(self, **kwargs)
+
+    monkeypatch.setattr(factory_module, "resolve_class", lambda path, base: CapturingModel)
+
+    factory_module.create_chat_model(name="qwen3-custom", thinking_enabled=False)
+
+    assert captured.get("reasoning") is False
+    # The custom when_thinking_disabled settings should also apply
+    assert captured.get("temperature") == 0.5
+
+
+def test_ollama_multiple_models_coexist(monkeypatch):
+    """Multiple Ollama models with different configs should work independently."""
+    m1 = ModelConfig(
+        name="qwen3-local",
+        display_name="Qwen3 32B (Ollama)",
+        description=None,
+        use="langchain_ollama:ChatOllama",
+        model="qwen3:32b",
+        base_url="http://localhost:11434",
+        reasoning=True,
+        supports_thinking=True,
+        supports_vision=False,
+    )
+    m2 = ModelConfig(
+        name="gemma4-local",
+        display_name="Gemma 4 27B (Ollama)",
+        description=None,
+        use="langchain_ollama:ChatOllama",
+        model="gemma4:27b",
+        base_url="http://localhost:11434",
+        reasoning=True,
+        supports_thinking=True,
+        supports_vision=True,
+    )
+    cfg = _make_app_config([m1, m2])
+    _patch_factory(monkeypatch, cfg)
+
+    captured: dict = {}
+
+    class CapturingModel(FakeChatModel):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            BaseChatModel.__init__(self, **kwargs)
+
+    monkeypatch.setattr(factory_module, "resolve_class", lambda path, base: CapturingModel)
+
+    # First model with thinking enabled
+    factory_module.create_chat_model(name="qwen3-local", thinking_enabled=True)
+    assert captured.get("model") == "qwen3:32b"
+    assert captured.get("reasoning") is True
+
+    # Second model with thinking disabled
+    factory_module.create_chat_model(name="gemma4-local", thinking_enabled=False)
+    assert captured.get("model") == "gemma4:27b"
+    assert captured.get("reasoning") is False

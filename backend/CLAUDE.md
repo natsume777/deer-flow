@@ -294,6 +294,7 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 - `create_chat_model(name, thinking_enabled)` instantiates LLM from config via reflection
 - Supports `thinking_enabled` flag with per-model `when_thinking_enabled` overrides
 - Supports vLLM-style thinking toggles via `when_thinking_enabled.extra_body.chat_template_kwargs.enable_thinking` for Qwen reasoning models, while normalizing legacy `thinking` configs for backward compatibility
+- Supports Ollama-style thinking toggle: when a model has `reasoning: true` in config and `supports_thinking: true`, disabling thinking sets `reasoning=False` on the `ChatOllama` constructor. Install: `cd backend && uv pip install 'deerflow-harness[ollama]'`
 - Supports `supports_vision` flag for image understanding models
 - Config values starting with `$` resolved as environment variables
 - Missing provider modules surface actionable install hints from reflection resolvers (for example `uv add langchain-google-genai`)
