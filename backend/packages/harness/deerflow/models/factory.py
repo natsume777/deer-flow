@@ -93,6 +93,11 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         elif has_thinking_settings and effective_wte.get("thinking", {}).get("type"):
             # Native langchain_anthropic: thinking is a direct constructor parameter
             model_settings_from_config["thinking"] = {"type": "disabled"}
+        elif model_config.supports_thinking and "reasoning" in model_settings_from_config:
+            # Ollama-style: `reasoning` is a direct constructor parameter on ChatOllama.
+            # When thinking is disabled, set reasoning=False so the model doesn't
+            # produce thinking output.
+            model_settings_from_config["reasoning"] = False
     if not model_config.supports_reasoning_effort:
         kwargs.pop("reasoning_effort", None)
         model_settings_from_config.pop("reasoning_effort", None)
