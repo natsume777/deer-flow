@@ -1,4 +1,5 @@
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -81,6 +82,13 @@ def create_app() -> FastAPI:
         Configured FastAPI application instance.
     """
 
+    # Disable interactive API documentation in production to avoid exposing
+    # internal endpoint schemas to unauthenticated users.
+    _is_production = os.getenv("DEER_FLOW_ENV", "development").lower() == "production"
+    _docs_url = None if _is_production else "/docs"
+    _redoc_url = None if _is_production else "/redoc"
+    _openapi_url = None if _is_production else "/openapi.json"
+
     app = FastAPI(
         title="DeerFlow API Gateway",
         description="""
@@ -104,9 +112,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
         """,
         version="0.1.0",
         lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url=_docs_url,
+        redoc_url=_redoc_url,
+        openapi_url=_openapi_url,
         openapi_tags=[
             {
                 "name": "models",

@@ -21,14 +21,14 @@ def test_ensure_thread_dirs_creates_acp_workspace(tmp_path):
     assert (tmp_path / "threads" / "thread-1" / "acp-workspace").exists()
 
 
-def test_ensure_thread_dirs_acp_workspace_is_world_writable(tmp_path):
-    """ACP workspace must be chmod 0o777 so the ACP subprocess can write into it."""
+def test_ensure_thread_dirs_acp_workspace_is_group_writable(tmp_path):
+    """ACP workspace must be chmod 0o770 so the sandbox group can write into it."""
     paths = Paths(base_dir=tmp_path)
     paths.ensure_thread_dirs("thread-2")
 
     acp_dir = tmp_path / "threads" / "thread-2" / "acp-workspace"
     mode = oct(acp_dir.stat().st_mode & 0o777)
-    assert mode == oct(0o777)
+    assert mode == oct(0o770)
 
 
 def test_host_thread_dir_rejects_invalid_thread_id(tmp_path):
